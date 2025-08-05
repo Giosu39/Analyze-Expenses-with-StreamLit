@@ -170,16 +170,19 @@ def execute(uploaded_file: Path) -> Path:
     extract_folder = temp_dir / "estratto"
     output_folder = temp_dir / "output"
 
-    input_folder.mkdir()
-    output_folder.mkdir()
+    input_folder.mkdir(parents=True, exist_ok=True)
+    extract_folder.mkdir(parents=True, exist_ok=True)
+    output_folder.mkdir(parents=True, exist_ok=True)
 
     # Copia il file .mmbackup nella cartella temporanea di input
     shutil.copy(uploaded_file, input_folder / uploaded_file.name)
 
     # Esegui l’estrazione e trasformazione dal file .mmbackup copiato
     db_path = extract_mmbackup(input_folder, extract_folder)
-    print("Contenuto di extract_folder:", list(extract_folder.glob("*")))
     
+    print("DB path atteso:", db_path)
+    print("Contenuto cartella estratta:", list(extract_folder.glob("*")))
+
     if db_path:
         export_db_to_json(db_path, input_folder)
 
