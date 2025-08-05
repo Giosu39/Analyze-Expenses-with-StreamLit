@@ -1,125 +1,115 @@
 import streamlit as st
 import pandas as pd
 import json
-import matplotlib.pyplot as plt
 import plotly.express as px
-import seaborn as sns
-from inputToOutput import get_output
-import datetime
+import os
+from inputToOutput import execute
+from datetime import datetime, timedelta
 
-# Reads data from "input" folder and outputs a single transaction file to "/output/output.json"
-get_output()
-
-# --------------------
-# Caricamento dati
-# --------------------
+# ====================
+# CONFIGURAZIONE
+# ====================
+INPUT_DIR = "input"
 FILE_PATH = "output/output.json"
+PERIOD_OPTIONS = ["Sempre", "Ultimo anno", "Anno corrente"]
 
-with open(FILE_PATH, "r", encoding="utf-8") as f:
-    data = json.load(f)
+# ====================
+# FUNZIONI DI SUPPORTO
+# ====================
+def check_and_request_backup():
+    """Verifica la presenza di un file .mmbackup in input/, se assente richiede upload."""
+    os.makedirs(INPUT_DIR, exist_ok=True)
+    backup_files = [f for f in os.listdir(INPUT_DIR) if f.endswith(".mmbackup")]
 
-df = pd.DataFrame(data)
-df['date'] = pd.to_datetime(df['date'])
+    if backup_files:
+        return True
 
-# --------------------
-# Sidebar (filtri)
-# --------------------
-st.sidebar.header("Filtri")
-year_filter = st.sidebar.multiselect("Anno", options=df['date'].dt.year.unique(), default=df['date'].dt.year.unique())
-type_filter = st.sidebar.multiselect("Tipo movimento", options=df['type'].unique(), default=df['type'].unique())
-
-df_filtered = df[(df['date'].dt.year.isin(year_filter)) & (df['type'].isin(type_filter))]
-
-# --------------------
-# Statistiche principali
-# --------------------
-st.title("📊 Dashboard Finanze Personali")
-
-entrate = df_filtered[df_filtered['type'] == "Entrata"]['value'].sum()
-spese = df_filtered[df_filtered['type'] == "Spesa"]['value'].sum()
-giroconti = df_filtered[df_filtered['type'] == "Giroconto"]['value'].sum()
-
-saldo = entrate - spese  # base senza giroconti
-
-col1, col2, col3, = st.columns(3)
-col1.metric("Entrate totali", f"{entrate:,.2f} €")
-col2.metric("Spese totali", f"{spese:,.2f} €")
-col3.metric("Saldo (Entrate - Spese)", f"{saldo:,.2f} €")
-
-# --------------------
-# Andamento nel tempo
-# --------------------
-# Copia e pulizia
-df_saldo = df.copy()
-df_saldo['date'] = pd.to_datetime(df_saldo['date'])
-df_saldo['importo'] = 0.0
-
-# Segno corretto
-df_saldo.loc[df_saldo['type'] == "Entrata", 'importo'] = df_saldo['value']
-df_saldo.loc[df_saldo['type'] == "Spesa", 'importo'] = -df_saldo['value']
-
-# Escludo i giroconti
-df_saldo = df_saldo[df_saldo['type'] != "Giroconto"]
-
-# Ordino cronologicamente
-df_saldo = df_saldo.sort_values('date')
-
-# Filtri tempo
-st.subheader("📈 Andamento Saldo Complessivo")
-
-period = st.radio(
-    "Seleziona periodo:",
-    options=["Sempre", "Ultimo anno", "Anno corrente"],
-    key="filtro_saldo"  # opzionale, se hai più radio
-)
-
-oggi = pd.Timestamp.today()
-
-if period == "Ultimo anno":
-    start_date = oggi - pd.Timedelta(days=365)
-    data_limite = oggi - pd.Timedelta(days=365)
-    df_filtered_saldo = df_saldo[df_saldo['date'] >= data_limite]
-
-elif period == "Anno corrente":
-    start_date = pd.Timestamp(year=oggi.year, month=1, day=1)
-    inizio_anno = pd.Timestamp(year=oggi.year, month=1, day=1)
-    df_filtered_saldo = df_saldo[df_saldo['date'] >= inizio_anno]
-
-else:
-    # Sempre
-    start_date = None  # nessun filtro
-    df_filtered_saldo = df_saldo.copy()
-
-# Calcolo saldo iniziale (somma cumulativa prima di start_date)
-if start_date:
-    saldo_iniziale = df_saldo[df_saldo['date'] < start_date]['importo'].sum()
-    df_filtered_saldo = df_saldo[df_saldo['date'] >= start_date].copy()
-else:
-    saldo_iniziale = 0
-    df_filtered_saldo = df_saldo.copy()
-
-# Raggruppo e ordino dopo filtro
-df_daily = df_filtered_saldo.groupby('date')['importo'].sum().reset_index()
-df_daily = df_daily.sort_values('date')
-
-# Calcolo saldo cumulativo partendo da saldo_iniziale
-df_daily['saldo'] = df_daily['importo'].cumsum() + saldo_iniziale
-
-# Mostra grafico
-st.line_chart(df_daily.set_index('date')['saldo'])
+    # Mostro uploader solo se non già caricato
+    uploaded_file = st.file_uploader("Carica file .mmbackup", type=["mmbackup"])
+    if uploaded_file is not None:
+        save_path = os.path.join(INPUT_DIR, uploaded_file.name)
+        with open(save_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        # Aggiorno lo stato per ricaricare la pagina senza uploader
+        st.session_state["backup_ready"] = True
+        st.rerun()
+    return False
 
 
+def load_data(file_path: str) -> pd.DataFrame:
+    """Carica i dati dal file JSON e converte in DataFrame."""
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    df = pd.DataFrame(data)
+    df['date'] = pd.to_datetime(df['date'])
+    return df
 
-# --------------------
-# Distribuzione per categoria
-# --------------------
-st.subheader("🗂 Distribuzione delle spese per categoria")
+def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
+    """Applica i filtri dalla sidebar e restituisce il DataFrame filtrato."""
+    st.sidebar.header("Filtri")
+    years = df['date'].dt.year.unique()
+    types = df['type'].unique()
 
-df_spese = df_filtered[df_filtered['type'] == "Spesa"]
+    year_filter = st.sidebar.multiselect("Anno", options=years, default=years)
+    type_filter = st.sidebar.multiselect("Tipo movimento", options=types, default=types)
 
-if not df_spese.empty:
+    return df[(df['date'].dt.year.isin(year_filter)) & (df['type'].isin(type_filter))]
+
+def show_summary(df: pd.DataFrame):
+    """Mostra le metriche principali (Entrate, Spese, Saldo)."""
+    entrate = df[df['type'] == "Entrata"]['value'].sum()
+    spese = df[df['type'] == "Spesa"]['value'].sum()
+    saldo = entrate - spese
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Entrate totali", f"{entrate:,.2f} €")
+    col2.metric("Spese totali", f"{spese:,.2f} €")
+    col3.metric("Saldo (Entrate - Spese)", f"{saldo:,.2f} €")
+
+def build_saldo_trend(df: pd.DataFrame):
+    """Costruisce il grafico dell'andamento saldo nel tempo."""
+    st.subheader("📈 Andamento Saldo Complessivo")
+    
+    # Prepara dati
+    df = df.copy()
+    df['importo'] = 0.0
+    df.loc[df['type'] == "Entrata", 'importo'] = df['value']
+    df.loc[df['type'] == "Spesa", 'importo'] = -df['value']
+    df = df[df['type'] != "Giroconto"].sort_values('date')
+
+    # Filtro periodo
+    oggi = pd.Timestamp.today()
+    period = st.radio("Seleziona periodo:", options=PERIOD_OPTIONS, key="filtro_saldo")
+
+    if period == "Ultimo anno":
+        start_date = oggi - timedelta(days=365)
+    elif period == "Anno corrente":
+        start_date = pd.Timestamp(year=oggi.year, month=1, day=1)
+    else:
+        start_date = None
+
+    if start_date:
+        saldo_iniziale = df[df['date'] < start_date]['importo'].sum()
+        df = df[df['date'] >= start_date].copy()
+    else:
+        saldo_iniziale = 0
+
+    # Cumulativo
+    df_daily = df.groupby('date')['importo'].sum().reset_index()
+    df_daily['saldo'] = df_daily['importo'].cumsum() + saldo_iniziale
+
+    st.line_chart(df_daily.set_index('date')['saldo'])
+
+def build_expense_distribution(df: pd.DataFrame):
+    """Mostra distribuzione spese per categoria."""
+    st.subheader("🗂 Distribuzione delle spese per categoria")
+
+    df_spese = df[df['type'] == "Spesa"]
+    if df_spese.empty:
+        st.write("Nessuna spesa nel periodo selezionato.")
+        return
+
     spese_categoria = df_spese.groupby("category")['value'].sum().reset_index()
-
     fig = px.pie(
         spese_categoria,
         values='value',
@@ -127,7 +117,6 @@ if not df_spese.empty:
         hole=0.3,
         title="Distribuzione delle spese per categoria",
     )
-
     fig.update_traces(
         textinfo='percent+label+value',
         textposition='inside',
@@ -142,7 +131,33 @@ if not df_spese.empty:
         uniformtext_minsize=12,
         uniformtext_mode='hide'
     )
-
     st.plotly_chart(fig, use_container_width=True)
-else:
-    st.write("Nessuna spesa nel periodo selezionato.")
+
+# ====================
+# MAIN APP
+# ====================
+def main():
+    st.title("📊 Dashboard Finanze Personali")
+
+    # Controllo stato: backup presente?
+    if "backup_ready" not in st.session_state:
+        st.session_state["backup_ready"] = False
+
+    if not st.session_state["backup_ready"]:
+        if not check_and_request_backup():
+            st.stop()
+
+    # Genera dati aggiornati
+    execute()
+
+    # Carica e filtra dati
+    df = load_data(FILE_PATH)
+    df_filtered = apply_filters(df)
+
+    # Sezioni
+    show_summary(df_filtered)
+    build_saldo_trend(df)
+    build_expense_distribution(df_filtered)
+
+if __name__ == "__main__":
+    main()

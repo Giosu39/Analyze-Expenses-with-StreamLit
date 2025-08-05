@@ -1,158 +1,179 @@
 import json
-import os
-import zipfile
 import sqlite3
+import zipfile
 import glob
+from pathlib import Path
+from typing import List, Dict, Any, Optional
 
+
+# ==============================
+# MODELLI
+# ==============================
 class Transaction:
-    def __init__(self, type_, date, value, account, category, fromAccount, toAccount):
+    """Rappresenta una transazione o un trasferimento di denaro."""
+
+    def __init__(self, type_: str, date: str, value: float,
+                 account: str = "", category: str = "",
+                 from_account: str = "", to_account: str = ""):
         self.type = type_
         self.date = date
         self.value = value
         self.account = account
         self.category = category
-        self.fromAccount = fromAccount
-        self.toAccount = toAccount
+        self.from_account = from_account
+        self.to_account = to_account
+
 
 class TransactionEncoder(json.JSONEncoder):
+    """Encoder JSON custom per oggetti Transaction."""
+
     def default(self, obj):
         if isinstance(obj, Transaction):
-            return {
-                "type": obj.type,
-                "date": obj.date,
-                "value": obj.value,
-                "account": obj.account,
-                "category": obj.category,
-                "fromAccount": obj.fromAccount,
-                "toAccount": obj.toAccount
-            }
+            return obj.__dict__
         return super().default(obj)
 
 
-def get_output():
-
-    # 1. Trova dinamicamente il file .mmbackup nella cartella input
-    input_folder = "input"
-    mmbackup_files = glob.glob(os.path.join(input_folder, "*.mmbackup"))
+# ==============================
+# FUNZIONI DI SUPPORTO
+# ==============================
+def extract_mmbackup(input_folder: Path, extract_folder: Path) -> Optional[Path]:
+    """Trova ed estrae il file .mmbackup come archivio zip."""
+    mmbackup_files = list(input_folder.glob("*.mmbackup"))
 
     if not mmbackup_files:
-        print('Nessun file .mmbackup trovato, procedo dando per scontato che ci siano già i file .json nella cartella "input"')
-        print('Se desideri un ricalcolo di tutto, per un avvio pulito, cancella i file nella cartella "input" e mettici dentro solo il file con estensione .mmbackup')
-    else:
-        mmbackup_file = mmbackup_files[0]
-        zip_file = mmbackup_file.replace(".mmbackup", ".zip")
+        print('⚠️ Nessun file .mmbackup trovato. Verranno usati i file JSON già presenti in "input".')
+        return None
 
-        # Rinomina il file
-        os.rename(mmbackup_file, zip_file)
-        print(f"File rinominato: {mmbackup_file} -> {zip_file}")
+    mmbackup_file = mmbackup_files[0]
+    zip_file = mmbackup_file.with_suffix(".zip")
 
-        # 2. Estrai il contenuto
-        extract_folder = "estratto"
-        os.makedirs(extract_folder, exist_ok=True)
+    mmbackup_file.rename(zip_file)
+    print(f"File rinominato: {mmbackup_file} -> {zip_file}")
 
-        with zipfile.ZipFile(zip_file, 'r') as zip_ref:
-            zip_ref.extractall(extract_folder)
-            print(f"File estratti nella cartella '{extract_folder}'")
+    extract_folder.mkdir(exist_ok=True)
+    with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+        zip_ref.extractall(extract_folder)
+        print(f"File estratti in: {extract_folder}")
 
-        # 3. Cerca il file myFinance.db
-        db_path = os.path.join(extract_folder, "myFinance.db")
-        if not os.path.exists(db_path):
-            raise FileNotFoundError("myFinance.db non trovato nell'archivio estratto.")
-
-        # 4. Connessione al database e export tabelle
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = cursor.fetchall()
-
-        output_folder = "input"
-        os.makedirs(output_folder, exist_ok=True)
-
-        for (table_name,) in tables:
-            # Usa virgolette doppie per proteggere i nomi delle tabelle
-            cursor.execute(f'SELECT * FROM "{table_name}"')
-            colonne = [desc[0] for desc in cursor.description]
-            righe = cursor.fetchall()
-
-            dati_tabella = [dict(zip(colonne, riga)) for riga in righe]
-
-            json_path = os.path.join(output_folder, f"{table_name}.json")
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(dati_tabella, f, ensure_ascii=False, indent=4)
-
-            print(f"Tabella '{table_name}' esportata in {json_path}")
+    return extract_folder / "myFinance.db"
 
 
-        conn.close()
-        print("✅ Esportazione completata.")
+def export_db_to_json(db_path: Path, output_folder: Path) -> None:
+    """Esporta tutte le tabelle di un database SQLite in file JSON."""
+    if not db_path.exists():
+        raise FileNotFoundError(f"{db_path} non trovato.")
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    tables = [t[0] for t in cursor.fetchall()]
+
+    output_folder.mkdir(exist_ok=True)
+
+    for table_name in tables:
+        cursor.execute(f'SELECT * FROM "{table_name}"')
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+
+        data = [dict(zip(columns, row)) for row in rows]
+        json_path = output_folder / f"{table_name}.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+
+        print(f"Tabella '{table_name}' esportata in {json_path}")
+
+    conn.close()
+    print("✅ Esportazione completata.")
 
 
-    with open('./input/account.json') as file:
-        account = json.load(file)
-    with open('./input/transaction.json') as file:
-        transaction = json.load(file)
-    with open('./input/transfer.json') as file:
-        transfer = json.load(file)
-    with open('./input/sync_link.json') as file:
-        sync_link = json.load(file)
-    with open('./input/category.json') as file:
-        category = json.load(file)
+def load_json(path: Path) -> Any:
+    """Carica un file JSON e restituisce il contenuto."""
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
 
-    category_map = {item['uid']: item for item in category}
-    account_map = {item['uid']: item for item in account}
-    transaction_account_map = {item['entityUid']: item for item in sync_link if item.get('otherType') == 'Account'}
-    transaction_category_map = {item['entityUid']: item for item in sync_link if item.get('otherType') == 'Category'}
-    transfer_from_account_map = {item['entityUid']: item for item in sync_link if item.get('otherType') == 'FromAccount'}
-    transfer_to_account_map = {item['entityUid']: item for item in sync_link if item.get('otherType') == 'ToAccount'}
 
-    outputTransactions = [] # One unique JSON for every transaction & transfer
+def build_transaction_list(
+    account: List[Dict], transaction: List[Dict], transfer: List[Dict], 
+    sync_link: List[Dict], category: List[Dict]
+) -> List[Transaction]:
+    """Crea la lista di Transaction a partire dai dati grezzi."""
+    
+    category_map = {c['uid']: c for c in category}
+    account_map = {a['uid']: a for a in account}
+
+    sync_maps = {
+        "Account": {s['entityUid']: s for s in sync_link if s.get('otherType') == 'Account'},
+        "Category": {s['entityUid']: s for s in sync_link if s.get('otherType') == 'Category'},
+        "FromAccount": {s['entityUid']: s for s in sync_link if s.get('otherType') == 'FromAccount'},
+        "ToAccount": {s['entityUid']: s for s in sync_link if s.get('otherType') == 'ToAccount'}
+    }
+
+    output_transactions: List[Transaction] = []
 
     for t in transaction:
-        if t['isRemoved'] == 1:
+        if t['isRemoved']:
             continue
-        transactionId = t['uid']
-
-        value = int(t['amountInDefaultCurrency']) / 100 # Output example: "10.50"
-        date = t['date'] # Output format: "YYYY-MM-DD"
-        account = account_map[transaction_account_map[transactionId]['otherUid']]
-        if account['ignoreInBalance'] == 1:
+        tid = t['uid']
+        acc = account_map[sync_maps["Account"][tid]['otherUid']]
+        if acc['ignoreInBalance']:
             continue
 
-        account_title = account['title']
-        if t['uid'] in transaction_category_map:
-            category = category_map[transaction_category_map[t['uid']]['otherUid']]['title']
-        else:
-            category = "Regolazione saldo"        
-        
-        if (t['type'] == 'Expense'):
-            outputTransactions.append(Transaction('Spesa', date, value, account_title, category, '', ''))
-        elif (t['type'] == 'Income'):
-            outputTransactions.append(Transaction('Entrata', date, value, account_title, category, '', ''))
+        value = int(t['amountInDefaultCurrency']) / 100
+        category_title = category_map.get(
+            sync_maps["Category"].get(tid, {}).get('otherUid'),
+            {"title": "Regolazione saldo"}
+        )['title']
 
+        tx_type = "Spesa" if t['type'] == 'Expense' else "Entrata"
+        output_transactions.append(Transaction(tx_type, t['date'], value, acc['title'], category_title))
 
-    for t in transfer:
-        if t['isRemoved'] == 1:
+    for tr in transfer:
+        if tr['isRemoved']:
             continue
-        transferId = t['uid']
-        value = int(t['fromAmount']) / 100 # Output example: "10.50"
-        date = t['date'] # Output format: "YYYY-MM-DD"
-        from_account = account_map[transfer_from_account_map[transferId]['otherUid']]['title']
-        to_account = account_map[transfer_to_account_map[transferId]['otherUid']]['title']
-        outputTransactions.append(Transaction('Giroconto', date, value, '', '', from_account, to_account))
+        tid = tr['uid']
+        value = int(tr['fromAmount']) / 100
+        from_acc = account_map[sync_maps["FromAccount"][tid]['otherUid']]['title']
+        to_acc = account_map[sync_maps["ToAccount"][tid]['otherUid']]['title']
 
-    # Sort by date
-    outputTransactions.sort(key=lambda t: t.date)
-        
-    # Percorso della cartella di output
-    cartella_output = "output"
-    os.makedirs(cartella_output, exist_ok=True)  # Crea la cartella se non esiste
-        
-    # Percorso del file
-    percorso_file = os.path.join(cartella_output, "output.json")
+        output_transactions.append(Transaction("Giroconto", tr['date'], value, from_account=from_acc, to_account=to_acc))
 
-    # Scrittura della lista come JSON
-    with open(percorso_file, "w", encoding="utf-8") as f:
-        json.dump(outputTransactions, f, ensure_ascii=False, indent=4, cls=TransactionEncoder)
+    return sorted(output_transactions, key=lambda t: t.date)
 
-    print(f"File salvato in: {percorso_file}")
+
+def save_transactions(transactions: List[Transaction], output_folder: Path) -> Path:
+    """Salva la lista delle transazioni in un file JSON."""
+    output_folder.mkdir(exist_ok=True)
+    output_file = output_folder / "output.json"
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(transactions, f, ensure_ascii=False, indent=4, cls=TransactionEncoder)
+
+    print(f"💾 File salvato in: {output_file}")
+    return output_file
+
+
+# ==============================
+# MAIN FUNCTION / EXECUTE WHOLE PROCESS
+# ==============================
+def execute():
+    input_folder = Path("input")
+    extract_folder = Path("estratto")
+    output_folder = Path("output")
+
+    db_path = extract_mmbackup(input_folder, extract_folder)
+    if db_path:
+        export_db_to_json(db_path, input_folder)
+
+    # Caricamento dati
+    account = load_json(input_folder / "account.json")
+    transaction = load_json(input_folder / "transaction.json")
+    transfer = load_json(input_folder / "transfer.json")
+    sync_link = load_json(input_folder / "sync_link.json")
+    category = load_json(input_folder / "category.json")
+
+    # Elaborazione
+    transactions = build_transaction_list(account, transaction, transfer, sync_link, category)
+
+    # Salvataggio
+    save_transactions(transactions, output_folder)
