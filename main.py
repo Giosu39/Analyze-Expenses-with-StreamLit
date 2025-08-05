@@ -251,7 +251,9 @@ def main():
         st.session_state["uploaded_file_path"] = None
 
     if st.session_state["uploaded_file_path"] is None:
-        uploaded_file = st.file_uploader("Carica file .mmbackup", type=["mmbackup"])
+        uploaded_file = st.file_uploader("Per procedere, carica qui un file con estensione .mmbackup", type=["mmbackup"])
+        st.subheader("Cos'è un file .mmbackup?")
+        st.html("Un file con estensione <i>.mmbackup</i> è un tipo di file che viene esportato quando eseguiamo il backup dall'app <b>Budget e finanze - spese</b> <i>(Play Store)</i>.")
         if uploaded_file is not None:
             # Salva temporaneamente il file caricato in un tmp file (streamlit upload è in-memory)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mmbackup") as tmp_file:
