@@ -178,6 +178,8 @@ def execute(uploaded_file: Path) -> Path:
 
     # Esegui l’estrazione e trasformazione dal file .mmbackup copiato
     db_path = extract_mmbackup(input_folder, extract_folder)
+    print("Contenuto di extract_folder:", list(extract_folder.glob("*")))
+    
     if db_path:
         export_db_to_json(db_path, input_folder)
 

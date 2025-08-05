@@ -28,9 +28,11 @@ def check_and_request_backup(tmp_input: Path) -> bool:
     # Mostro uploader solo se non già caricato
     uploaded_file = st.file_uploader("Carica file .mmbackup", type=["mmbackup"])
     if uploaded_file is not None:
+        print("Carico da:", uploaded_file)
         save_path = tmp_input / uploaded_file.name
         with open(save_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
+            print("Esiste:", Path(uploaded_file).exists())
         # Aggiorno lo stato per ricaricare la pagina senza uploader
         st.session_state["backup_ready"] = True
         st.rerun()
