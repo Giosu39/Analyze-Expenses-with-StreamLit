@@ -56,7 +56,7 @@ def extract_mmbackup(input_folder: Path, extract_folder: Path) -> Optional[Path]
         zip_ref.extractall(extract_folder)
         print(f"File estratti in: {extract_folder}")
 
-    return extract_folder / "myFinance.db"
+    return extract_folder / "MyFinance.db"
 
 
 def export_db_to_json(db_path: Path, output_folder: Path) -> None:
