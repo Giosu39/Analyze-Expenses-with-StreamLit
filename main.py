@@ -55,7 +55,7 @@ def apply_filters(df: pd.DataFrame, start_date: datetime) -> pd.DataFrame:
 
     return df
 
-def get_start_date(period: str) -> datetime:
+def get_start_date(period: str, df: pd.DataFrame) -> datetime:
      
     oggi = pd.Timestamp.today()
 
@@ -63,27 +63,52 @@ def get_start_date(period: str) -> datetime:
         start_date = oggi - timedelta(days=365)
     elif period == "Anno corrente":
         start_date = pd.Timestamp(year=oggi.year, month=1, day=1)
+    elif period == "Sempre" and not df.empty:
+        start_date = df['date'].min()
     else:
         start_date = None
     
     return start_date
+
+def get_crescita_percentuale(df_unfiltered: pd.DataFrame, saldo_periodo, start_date: datetime) -> str:
+
     
 
-def show_summary(df: pd.DataFrame):
-    """Mostra le metriche principali (Entrate, Spese, Saldo)."""
-    entrate = df[df['type'] == "Entrata"]['value'].sum()
-    spese = df[df['type'] == "Spesa"]['value'].sum()
-    saldo = entrate - spese
+    # Calcolo saldo iniziale considerando operazioni precedenti al periodo
+    df_unfiltered = df_unfiltered.copy()
+    df_unfiltered['importo'] = 0.0
+    df_unfiltered.loc[df_unfiltered['type'] == "Entrata", 'importo'] = df_unfiltered['value']
+    df_unfiltered.loc[df_unfiltered['type'] == "Spesa", 'importo'] = -df_unfiltered['value']
+    df_unfiltered = df_unfiltered[df_unfiltered['type'] != "Giroconto"]
 
+    if start_date:
+        saldo_iniziale = df_unfiltered[df_unfiltered['date'] <= start_date]['importo'].sum()
+    else:
+        saldo_iniziale = 0
+
+    saldo_finale = saldo_iniziale + saldo_periodo
+
+    # Calcolo crescita percentuale (gestione caso saldo iniziale = 0)
+    if saldo_iniziale != 0:
+        crescita_percentuale = ((saldo_finale - saldo_iniziale) / abs(saldo_iniziale)) * 100
+        crescita_str = f"{crescita_percentuale:.2f} %"
+    else:
+        crescita_str = "N/A"
+
+    return crescita_str
+    
+
+def show_summary(df: pd.DataFrame, entrate, spese, saldo_periodo):
+    """Mostra le metriche principali (Entrate, Spese, Saldo)."""
     col1, col2, col3 = st.columns(3)
     col1.metric("Entrate totali", f"{entrate:,.2f} €")
     col2.metric("Spese totali", f"{spese:,.2f} €")
-    col3.metric("Saldo (Entrate - Spese)", f"{saldo:,.2f} €")
+    col3.metric("Saldo (Entrate - Spese)", f"{saldo_periodo:,.2f} €")
 
 
-def build_saldo_trend(df: pd.DataFrame, df_unfiltered: pd.DataFrame, start_date: datetime):
+def build_saldo_trend(df: pd.DataFrame, df_unfiltered: pd.DataFrame, start_date: datetime, crescita_percentuale: str):
     """Costruisce il grafico dell'andamento saldo nel tempo."""
-    st.subheader("📈 Andamento Saldo Complessivo")
+    st.subheader("📈 Andamento Saldo Complessivo (" + crescita_percentuale + ")")
 
     df = df.copy()
     df['importo'] = 0.0
@@ -171,13 +196,20 @@ def main():
         # Sidebar filtro "Periodo"
         st.sidebar.header("Filtri")
         periodo = st.sidebar.radio("Seleziona periodo:", options=PERIOD_OPTIONS, index=0, key="filtro_periodo")
-        start_date = get_start_date(periodo)
+        start_date = get_start_date(periodo, df_unfiltered)
 
         # Applica filtro periodo
         df_filtered = apply_filters(df_unfiltered, start_date)
 
-        show_summary(df_filtered)
-        build_saldo_trend(df_filtered, df_unfiltered, start_date)
+        # Entrate e Spese nel periodo filtrato
+        entrate = df_filtered[df_filtered['type'] == "Entrata"]['value'].sum()
+        spese = df_filtered[df_filtered['type'] == "Spesa"]['value'].sum()
+        saldo_periodo = entrate - spese
+
+        crescita_percentuale = get_crescita_percentuale(df_unfiltered, saldo_periodo, start_date)
+
+        show_summary(df_filtered, entrate, spese, saldo_periodo)
+        build_saldo_trend(df_filtered, df_unfiltered, start_date, crescita_percentuale)
         build_expense_distribution(df_filtered)
 
 
