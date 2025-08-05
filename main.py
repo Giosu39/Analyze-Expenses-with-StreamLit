@@ -5,6 +5,7 @@ import plotly.express as px
 import os
 from inputToOutput import execute
 from datetime import timedelta
+import datetime
 from pathlib import Path
 import tempfile
 import shutil
@@ -47,18 +48,26 @@ def load_data(file_path: Path) -> pd.DataFrame:
     df['date'] = pd.to_datetime(df['date'])
     return df
 
+def apply_filters(df: pd.DataFrame, start_date: datetime) -> pd.DataFrame:
 
-def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
-    """Applica i filtri dalla sidebar e restituisce il DataFrame filtrato."""
-    st.sidebar.header("Filtri")
-    years = df['date'].dt.year.unique()
-    types = df['type'].unique()
+    if start_date:
+        df = df[df['date'] >= start_date]
 
-    year_filter = st.sidebar.multiselect("Anno", options=years, default=years)
-    type_filter = st.sidebar.multiselect("Tipo movimento", options=types, default=types)
+    return df
 
-    return df[(df['date'].dt.year.isin(year_filter)) & (df['type'].isin(type_filter))]
+def get_start_date(period: str) -> datetime:
+     
+    oggi = pd.Timestamp.today()
 
+    if period == "Ultimo anno":
+        start_date = oggi - timedelta(days=365)
+    elif period == "Anno corrente":
+        start_date = pd.Timestamp(year=oggi.year, month=1, day=1)
+    else:
+        start_date = None
+    
+    return start_date
+    
 
 def show_summary(df: pd.DataFrame):
     """Mostra le metriche principali (Entrate, Spese, Saldo)."""
@@ -72,7 +81,7 @@ def show_summary(df: pd.DataFrame):
     col3.metric("Saldo (Entrate - Spese)", f"{saldo:,.2f} €")
 
 
-def build_saldo_trend(df: pd.DataFrame):
+def build_saldo_trend(df: pd.DataFrame, df_unfiltered: pd.DataFrame, start_date: datetime):
     """Costruisce il grafico dell'andamento saldo nel tempo."""
     st.subheader("📈 Andamento Saldo Complessivo")
 
@@ -82,19 +91,15 @@ def build_saldo_trend(df: pd.DataFrame):
     df.loc[df['type'] == "Spesa", 'importo'] = -df['value']
     df = df[df['type'] != "Giroconto"].sort_values('date')
 
-    oggi = pd.Timestamp.today()
-    period = st.radio("Seleziona periodo:", options=PERIOD_OPTIONS, key="filtro_saldo")
-
-    if period == "Ultimo anno":
-        start_date = oggi - timedelta(days=365)
-    elif period == "Anno corrente":
-        start_date = pd.Timestamp(year=oggi.year, month=1, day=1)
-    else:
-        start_date = None
+    df_unfiltered = df_unfiltered.copy()
+    df_unfiltered['importo'] = 0.0
+    df_unfiltered.loc[df_unfiltered['type'] == "Entrata", 'importo'] = df_unfiltered['value']
+    df_unfiltered.loc[df_unfiltered['type'] == "Spesa", 'importo'] = -df_unfiltered['value']
+    df_unfiltered = df_unfiltered[df_unfiltered['type'] != "Giroconto"].sort_values('date')
 
     if start_date:
-        saldo_iniziale = df[df['date'] < start_date]['importo'].sum()
-        df = df[df['date'] >= start_date].copy()
+        saldo_iniziale = df_unfiltered[df_unfiltered['date'] < start_date]['importo'].sum()
+        # df = df[df['date'] >= start_date].copy()
     else:
         saldo_iniziale = 0
 
@@ -161,12 +166,18 @@ def main():
         output_file = execute(Path(st.session_state["uploaded_file_path"]))
 
         # Carica e filtra dati
-        df = load_data(output_file)
-        df_filtered = apply_filters(df)
+        df_unfiltered = load_data(output_file)
 
-        # Sezioni dashboard
+        # Sidebar filtro "Periodo"
+        st.sidebar.header("Filtri")
+        periodo = st.sidebar.radio("Seleziona periodo:", options=PERIOD_OPTIONS, index=0, key="filtro_periodo")
+        start_date = get_start_date(periodo)
+
+        # Applica filtro periodo
+        df_filtered = apply_filters(df_unfiltered, start_date)
+
         show_summary(df_filtered)
-        build_saldo_trend(df)
+        build_saldo_trend(df_filtered, df_unfiltered, start_date)
         build_expense_distribution(df_filtered)
 
 
