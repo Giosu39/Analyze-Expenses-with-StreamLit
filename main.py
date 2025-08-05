@@ -4,22 +4,23 @@ import json
 import plotly.express as px
 import os
 from inputToOutput import execute
-from datetime import datetime, timedelta
+from datetime import timedelta
+from pathlib import Path
+import tempfile
+import shutil
 
 # ====================
 # CONFIGURAZIONE
 # ====================
-INPUT_DIR = "input"
-FILE_PATH = "output/output.json"
 PERIOD_OPTIONS = ["Sempre", "Ultimo anno", "Anno corrente"]
 
 # ====================
 # FUNZIONI DI SUPPORTO
 # ====================
-def check_and_request_backup():
-    """Verifica la presenza di un file .mmbackup in input/, se assente richiede upload."""
-    os.makedirs(INPUT_DIR, exist_ok=True)
-    backup_files = [f for f in os.listdir(INPUT_DIR) if f.endswith(".mmbackup")]
+def check_and_request_backup(tmp_input: Path) -> bool:
+    """Verifica la presenza di un file .mmbackup, se assente richiede upload."""
+    tmp_input.mkdir(parents=True, exist_ok=True)
+    backup_files = list(tmp_input.glob("*.mmbackup"))
 
     if backup_files:
         return True
@@ -27,7 +28,7 @@ def check_and_request_backup():
     # Mostro uploader solo se non già caricato
     uploaded_file = st.file_uploader("Carica file .mmbackup", type=["mmbackup"])
     if uploaded_file is not None:
-        save_path = os.path.join(INPUT_DIR, uploaded_file.name)
+        save_path = tmp_input / uploaded_file.name
         with open(save_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         # Aggiorno lo stato per ricaricare la pagina senza uploader
@@ -36,13 +37,14 @@ def check_and_request_backup():
     return False
 
 
-def load_data(file_path: str) -> pd.DataFrame:
+def load_data(file_path: Path) -> pd.DataFrame:
     """Carica i dati dal file JSON e converte in DataFrame."""
     with open(file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     df = pd.DataFrame(data)
     df['date'] = pd.to_datetime(df['date'])
     return df
+
 
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     """Applica i filtri dalla sidebar e restituisce il DataFrame filtrato."""
@@ -55,6 +57,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
 
     return df[(df['date'].dt.year.isin(year_filter)) & (df['type'].isin(type_filter))]
 
+
 def show_summary(df: pd.DataFrame):
     """Mostra le metriche principali (Entrate, Spese, Saldo)."""
     entrate = df[df['type'] == "Entrata"]['value'].sum()
@@ -66,18 +69,17 @@ def show_summary(df: pd.DataFrame):
     col2.metric("Spese totali", f"{spese:,.2f} €")
     col3.metric("Saldo (Entrate - Spese)", f"{saldo:,.2f} €")
 
+
 def build_saldo_trend(df: pd.DataFrame):
     """Costruisce il grafico dell'andamento saldo nel tempo."""
     st.subheader("📈 Andamento Saldo Complessivo")
-    
-    # Prepara dati
+
     df = df.copy()
     df['importo'] = 0.0
     df.loc[df['type'] == "Entrata", 'importo'] = df['value']
     df.loc[df['type'] == "Spesa", 'importo'] = -df['value']
     df = df[df['type'] != "Giroconto"].sort_values('date')
 
-    # Filtro periodo
     oggi = pd.Timestamp.today()
     period = st.radio("Seleziona periodo:", options=PERIOD_OPTIONS, key="filtro_saldo")
 
@@ -94,11 +96,11 @@ def build_saldo_trend(df: pd.DataFrame):
     else:
         saldo_iniziale = 0
 
-    # Cumulativo
     df_daily = df.groupby('date')['importo'].sum().reset_index()
     df_daily['saldo'] = df_daily['importo'].cumsum() + saldo_iniziale
 
     st.line_chart(df_daily.set_index('date')['saldo'])
+
 
 def build_expense_distribution(df: pd.DataFrame):
     """Mostra distribuzione spese per categoria."""
@@ -133,31 +135,38 @@ def build_expense_distribution(df: pd.DataFrame):
     )
     st.plotly_chart(fig, use_container_width=True)
 
+
 # ====================
 # MAIN APP
 # ====================
 def main():
     st.title("📊 Dashboard Finanze Personali")
 
-    # Controllo stato: backup presente?
-    if "backup_ready" not in st.session_state:
-        st.session_state["backup_ready"] = False
+    if "uploaded_file_path" not in st.session_state:
+        st.session_state["uploaded_file_path"] = None
 
-    if not st.session_state["backup_ready"]:
-        if not check_and_request_backup():
-            st.stop()
+    if st.session_state["uploaded_file_path"] is None:
+        uploaded_file = st.file_uploader("Carica file .mmbackup", type=["mmbackup"])
+        if uploaded_file is not None:
+            # Salva temporaneamente il file caricato in un tmp file (streamlit upload è in-memory)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mmbackup") as tmp_file:
+                tmp_file.write(uploaded_file.getbuffer())
+                st.session_state["uploaded_file_path"] = tmp_file.name
+            st.rerun()
 
-    # Genera dati aggiornati
-    execute()
+    if st.session_state["uploaded_file_path"]:
+        # Esegui il processo e mostra dati
+        output_file = execute(Path(st.session_state["uploaded_file_path"]))
 
-    # Carica e filtra dati
-    df = load_data(FILE_PATH)
-    df_filtered = apply_filters(df)
+        # Carica e filtra dati
+        df = load_data(output_file)
+        df_filtered = apply_filters(df)
 
-    # Sezioni
-    show_summary(df_filtered)
-    build_saldo_trend(df)
-    build_expense_distribution(df_filtered)
+        # Sezioni dashboard
+        show_summary(df_filtered)
+        build_saldo_trend(df)
+        build_expense_distribution(df_filtered)
+
 
 if __name__ == "__main__":
     main()

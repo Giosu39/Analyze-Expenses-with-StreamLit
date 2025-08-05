@@ -1,9 +1,10 @@
 import json
 import sqlite3
 import zipfile
-import glob
+import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+import shutil
 
 
 # ==============================
@@ -156,24 +157,41 @@ def save_transactions(transactions: List[Transaction], output_folder: Path) -> P
 # ==============================
 # MAIN FUNCTION / EXECUTE WHOLE PROCESS
 # ==============================
-def execute():
-    input_folder = Path("input")
-    extract_folder = Path("estratto")
-    output_folder = Path("output")
+def execute(uploaded_file: Path) -> Path:
+    """
+    Esegue l'intero processo a partire da un file .mmbackup dato come Path.
+    Usa cartelle temporanee isolate per input/output.
+    Restituisce il path del file JSON output.
+    """
 
+    # Crea una directory temporanea
+    temp_dir = Path(tempfile.mkdtemp())
+    input_folder = temp_dir / "input"
+    extract_folder = temp_dir / "estratto"
+    output_folder = temp_dir / "output"
+
+    input_folder.mkdir()
+    output_folder.mkdir()
+
+    # Copia il file .mmbackup nella cartella temporanea di input
+    shutil.copy(uploaded_file, input_folder / uploaded_file.name)
+
+    # Esegui l’estrazione e trasformazione dal file .mmbackup copiato
     db_path = extract_mmbackup(input_folder, extract_folder)
     if db_path:
         export_db_to_json(db_path, input_folder)
 
-    # Caricamento dati
+    # Carica i JSON da input_folder
     account = load_json(input_folder / "account.json")
     transaction = load_json(input_folder / "transaction.json")
     transfer = load_json(input_folder / "transfer.json")
     sync_link = load_json(input_folder / "sync_link.json")
     category = load_json(input_folder / "category.json")
 
-    # Elaborazione
+    # Costruisci la lista di transazioni
     transactions = build_transaction_list(account, transaction, transfer, sync_link, category)
 
-    # Salvataggio
-    save_transactions(transactions, output_folder)
+    # Salva output json
+    output_file = save_transactions(transactions, output_folder)
+
+    return output_file
