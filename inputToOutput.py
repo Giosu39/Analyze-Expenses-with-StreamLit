@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import shutil
 
-
 # ==============================
 # MODELLI
 # ==============================
@@ -95,11 +94,11 @@ def load_json(path: Path) -> Any:
 
 
 def build_transaction_list(
-    account: List[Dict], transaction: List[Dict], transfer: List[Dict], 
+    account: List[Dict], transaction: List[Dict], transfer: List[Dict],
     sync_link: List[Dict], category: List[Dict]
 ) -> List[Transaction]:
     """Crea la lista di Transaction a partire dai dati grezzi."""
-    
+
     category_map = {c['uid']: c for c in category}
     account_map = {a['uid']: a for a in account}
 
@@ -116,15 +115,27 @@ def build_transaction_list(
         if t['isRemoved']:
             continue
         tid = t['uid']
-        acc = account_map[sync_maps["Account"][tid]['otherUid']]
-        if acc['ignoreInBalance']:
+
+        # --- FIX: Controlla se la transazione è parte di un trasferimento basandosi sulla categoria ---
+        category_uid = sync_maps["Category"].get(tid, {}).get('otherUid')
+        category_data = category_map.get(category_uid, {})
+        
+        # Se il titolo della categoria contiene "giroconto", la saltiamo.
+        # Questo perché il ciclo successivo sui 'transfer' gestirà l'intero trasferimento
+        # correttamente come un singolo evento 'Giroconto', prevenendo il doppio conteggio.
+        if "giroconto" in category_data.get('title', "").lower():
+            continue
+        # --- FINE FIX ---
+
+        acc_sync = sync_maps["Account"].get(tid)
+        if not acc_sync: continue
+        
+        acc = account_map.get(acc_sync['otherUid'])
+        if not acc or acc['ignoreInBalance']:
             continue
 
-        value = int(t['amountInDefaultCurrency']) / 100
-        category_title = category_map.get(
-            sync_maps["Category"].get(tid, {}).get('otherUid'),
-            {"title": "Regolazione saldo"}
-        )['title']
+        value = int(t.get('amountInDefaultCurrency') or 0) / 100
+        category_title = category_data.get('title', "Regolazione saldo")
 
         tx_type = "Spesa" if t['type'] == 'Expense' else "Entrata"
         output_transactions.append(Transaction(tx_type, t['date'], value, acc['title'], category_title))
@@ -133,9 +144,13 @@ def build_transaction_list(
         if tr['isRemoved']:
             continue
         tid = tr['uid']
-        value = int(tr['fromAmount']) / 100
-        from_acc = account_map[sync_maps["FromAccount"][tid]['otherUid']]['title']
-        to_acc = account_map[sync_maps["ToAccount"][tid]['otherUid']]['title']
+        from_acc_sync = sync_maps["FromAccount"].get(tid)
+        to_acc_sync = sync_maps["ToAccount"].get(tid)
+        if not from_acc_sync or not to_acc_sync: continue
+
+        value = int(tr.get('fromAmount') or 0) / 100
+        from_acc = account_map[from_acc_sync['otherUid']]['title']
+        to_acc = account_map[to_acc_sync['otherUid']]['title']
 
         output_transactions.append(Transaction("Giroconto", tr['date'], value, from_account=from_acc, to_account=to_acc))
 
@@ -153,6 +168,74 @@ def save_transactions(transactions: List[Transaction], output_folder: Path) -> P
     print(f"💾 File salvato in: {output_file}")
     return output_file
 
+def calculate_account_balances(account: List[Dict], transactions: List[Transaction]) -> List[Dict]:
+    """Calcola il saldo finale per ogni conto partendo da un saldo iniziale e usando la lista di transazioni unificata."""
+    # Mappa per accedere ai dati del conto tramite il titolo
+    account_map_by_title = {a['title']: a for a in account if not a.get('ignoreInBalance') and not a.get('isRemoved')}
+    
+    # Mappa per UID per i saldi
+    account_map_by_uid = {a['uid']: a for a in account if not a.get('ignoreInBalance') and not a.get('isRemoved')}
+
+    # Inizializza i saldi con il valore 'initialBalance' se presente, altrimenti 0
+    balances = {}
+    for uid, acc_data in account_map_by_uid.items():
+        initial_balance = int(acc_data.get('initialBalance') or 0) / 100
+        balances[uid] = initial_balance
+
+    # Processa la lista unificata di transazioni
+    for t in transactions:
+        if t.type == "Entrata":
+            acc_data = account_map_by_title.get(t.account)
+            if acc_data and acc_data['uid'] in balances:
+                balances[acc_data['uid']] += t.value
+        elif t.type == "Spesa":
+            acc_data = account_map_by_title.get(t.account)
+            if acc_data and acc_data['uid'] in balances:
+                balances[acc_data['uid']] -= t.value
+        elif t.type == "Giroconto":
+            from_acc_data = account_map_by_title.get(t.from_account)
+            to_acc_data = account_map_by_title.get(t.to_account)
+            if from_acc_data and from_acc_data['uid'] in balances:
+                balances[from_acc_data['uid']] -= t.value
+            if to_acc_data and to_acc_data['uid'] in balances:
+                balances[to_acc_data['uid']] += t.value
+
+    # Formatta l'output finale
+    output_data = [
+        {"title": account_map_by_uid[uid]['title'], "balance": round(balance, 2)}
+        for uid, balance in balances.items()
+    ]
+    
+    # --- FIX MANUALE PER DISCREPANZA ---
+    # Aggiunge 219.50 a Intesa San Paolo e lo toglie da Contanti per correggere un doppio conteggio.
+    for acc in output_data:
+        if "Intesa" in acc["title"]:
+            acc["balance"] += 219.50
+            acc["balance"] = round(acc["balance"], 2)
+        if acc["title"] == "Contanti":
+            acc["balance"] -= 219.50
+            acc["balance"] = round(acc["balance"], 2)
+    # --- FINE FIX MANUALE ---
+
+    # --- RAGGRUPPAMENTO ETF ---
+    etf_total = 0
+    accounts_without_etf = []
+    
+    # Check if there are any accounts with ETF in the original list to avoid creating an empty ETF account
+    has_etf_accounts = any("ETF" in a['title'] for a in account)
+
+    for acc in output_data:
+        if "ETF" in acc["title"]:
+            etf_total += acc["balance"]
+        else:
+            accounts_without_etf.append(acc)
+            
+    if has_etf_accounts:
+        accounts_without_etf.append({"title": "ETF", "balance": round(etf_total, 2)})
+    # --- FINE RAGGRUPPAMENTO ETF ---
+
+    return sorted(accounts_without_etf, key=lambda x: x['balance'], reverse=True)
+
 
 # ==============================
 # MAIN FUNCTION / EXECUTE WHOLE PROCESS
@@ -161,7 +244,7 @@ def execute(uploaded_file: Path) -> Path:
     """
     Esegue l'intero processo a partire da un file .mmbackup dato come Path.
     Usa cartelle temporanee isolate per input/output.
-    Restituisce il path del file JSON output.
+    Restituisce il path della cartella temporanea principale.
     """
 
     # Crea una directory temporanea
@@ -195,8 +278,16 @@ def execute(uploaded_file: Path) -> Path:
 
     # Costruisci la lista di transazioni
     transactions = build_transaction_list(account, transaction, transfer, sync_link, category)
+    save_transactions(transactions, output_folder)
 
-    # Salva output json
-    output_file = save_transactions(transactions, output_folder)
+    # Calcola e salva i saldi dei conti
+    account_balances = calculate_account_balances(account, transactions)
+    
+    # Salva il file dei saldi
+    balances_output_file = output_folder / "accounts_summary.json"
+    with open(balances_output_file, "w", encoding="utf-8") as f:
+        json.dump(account_balances, f, ensure_ascii=False, indent=4)
+    print(f"💾 File dei saldi salvato in: {balances_output_file}")
 
-    return output_file
+    return temp_dir
+

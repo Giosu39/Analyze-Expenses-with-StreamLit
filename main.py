@@ -107,6 +107,45 @@ def show_summary(df: pd.DataFrame, entrate, spese, saldo_periodo):
     col2.metric("Spese totali", f"{spese:,.2f} €")
     col3.metric("Saldo (Entrate - Spese)", f"{saldo_periodo:,.2f} €")
 
+def build_accounts_pie_chart(accounts_summary_file: Path):
+    """Costruisce il grafico a torta della divisione del patrimonio tra i conti."""
+    st.subheader("🍰 Divisione del patrimonio")
+
+    if not accounts_summary_file.exists():
+        st.write("File dei saldi non trovato.")
+        return
+
+    with open(accounts_summary_file, "r", encoding="utf-8") as f:
+        accounts_summary = json.load(f)
+
+    # Filtra conti con saldo > 0 per un grafico più pulito
+    positive_balance_accounts = [acc for acc in accounts_summary if acc['balance'] > 0]
+
+    if not positive_balance_accounts:
+        st.write("Nessun conto con saldo positivo da mostrare.")
+        return
+
+    df_accounts = pd.DataFrame(positive_balance_accounts)
+
+    fig = px.pie(
+        df_accounts,
+        values='balance',
+        names='title',
+        hole=0.3
+    )
+    fig.update_traces(
+        textinfo='percent+label',
+        textposition='inside',
+        hovertemplate='<b>%{label}</b><br>Saldo: %{value:,.2f} €<br>%{percent}',
+        textfont_size=14,
+        insidetextorientation='radial'
+    )
+    fig.update_layout(
+        showlegend=False,
+        uniformtext_minsize=10,
+        uniformtext_mode='hide'
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 def build_saldo_trend(df: pd.DataFrame, df_unfiltered: pd.DataFrame, start_date: datetime, crescita_percentuale: str, crescita_mensile_str: str):
     """Costruisce il grafico dell'andamento saldo nel tempo."""
@@ -263,7 +302,9 @@ def main():
 
     if st.session_state["uploaded_file_path"]:
         # Esegui il processo e mostra dati
-        output_file = execute(Path(st.session_state["uploaded_file_path"]))
+        temp_dir = execute(Path(st.session_state["uploaded_file_path"]))
+        output_file = temp_dir / "output" / "output.json"
+        accounts_summary_file = temp_dir / "output" / "accounts_summary.json"
 
         # Carica e filtra dati
         df_unfiltered = load_data(output_file)
@@ -283,21 +324,66 @@ def main():
         saldo_periodo = entrate - spese
 
         crescita_percentuale = get_crescita_percentuale(df_unfiltered, saldo_periodo, start_date)
-        crescita_percentuale_value = float(crescita_percentuale.replace("%", "").replace(",", ".") .strip() ) / 100  # 120.45% -> 1.2045
         
-        # Calcolo crescita media mensile
-        fattore_totale = 1 + crescita_percentuale_value
-        delta = relativedelta(today, start_date)
-        mesi_trascorsi = delta.years * 12 + delta.months + (1 if delta.days > 0 else 0)
-        crescita_mensile = (fattore_totale ** (1 / mesi_trascorsi)) - 1
-        crescita_mensile_str = f"{crescita_mensile:.2%}"
+        # Gestione del caso in cui la crescita percentuale non è calcolabile
+        try:
+            crescita_percentuale_value = float(crescita_percentuale.replace("%", "").replace(",", ".") .strip() ) / 100
+            # Calcolo crescita media mensile
+            fattore_totale = 1 + crescita_percentuale_value
+            delta = relativedelta(today, start_date)
+            mesi_trascorsi = delta.years * 12 + delta.months + (1 if delta.days > 0 else 0)
+            if mesi_trascorsi > 0:
+                crescita_mensile = (fattore_totale ** (1 / mesi_trascorsi)) - 1
+                crescita_mensile_str = f"{crescita_mensile:.2%}"
+            else:
+                crescita_mensile_str = "N/A"
+        except (ValueError, AttributeError):
+            crescita_percentuale_value = 0
+            crescita_mensile_str = "N/A"
 
         show_summary(df_filtered, entrate, spese, saldo_periodo)
+        build_accounts_pie_chart(accounts_summary_file)
         build_saldo_trend(df_filtered, df_unfiltered, start_date, crescita_percentuale, crescita_mensile_str)
         build_expense_distribution(df_filtered)
         if (periodo != "Anno corrente"):
             build_forecast(df_filtered, df_unfiltered, start_date)
+        
+        # --- SEZIONE DEBUG PER DOWNLOAD FILE ---
+        st.sidebar.header("Debug")
+        
+        transaction_json_path = temp_dir / "input" / "transaction.json"
+        transfer_json_path = temp_dir / "input" / "transfer.json"
+        sync_link_json_path = temp_dir / "input" / "sync_link.json"
+
+        if transaction_json_path.exists():
+            with open(transaction_json_path, "rb") as fp:
+                st.sidebar.download_button(
+                    label="Scarica transaction.json",
+                    data=fp,
+                    file_name="transaction.json",
+                    mime="application/json"
+                )
+
+        if transfer_json_path.exists():
+            with open(transfer_json_path, "rb") as fp:
+                st.sidebar.download_button(
+                    label="Scarica transfer.json",
+                    data=fp,
+                    file_name="transfer.json",
+                    mime="application/json"
+                )
+
+        if sync_link_json_path.exists():
+            with open(sync_link_json_path, "rb") as fp:
+                st.sidebar.download_button(
+                    label="Scarica sync_link.json",
+                    data=fp,
+                    file_name="sync_link.json",
+                    mime="application/json"
+                )
+        # --- FINE SEZIONE DEBUG ---
 
 
 if __name__ == "__main__":
     main()
+
