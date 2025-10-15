@@ -350,10 +350,21 @@ def main():
         
         # --- SEZIONE DEBUG PER DOWNLOAD FILE ---
         st.sidebar.header("Debug")
-        
+
+        account_json_path = temp_dir / "input" / "account.json" 
         transaction_json_path = temp_dir / "input" / "transaction.json"
         transfer_json_path = temp_dir / "input" / "transfer.json"
         sync_link_json_path = temp_dir / "input" / "sync_link.json"
+        category_json_path = temp_dir / "input" / "category.json"
+
+        if account_json_path.exists():
+            with open(account_json_path, "rb") as fp:
+                st.sidebar.download_button(
+                    label="Scarica account.json",
+                    data=fp,
+                    file_name="account.json",
+                    mime="application/json"
+                )
 
         if transaction_json_path.exists():
             with open(transaction_json_path, "rb") as fp:
@@ -379,6 +390,15 @@ def main():
                     label="Scarica sync_link.json",
                     data=fp,
                     file_name="sync_link.json",
+                    mime="application/json"
+                )
+        
+        if category_json_path.exists():
+            with open(category_json_path, "rb") as fp:
+                st.sidebar.download_button(
+                    label="Scarica category.json",
+                    data=fp,
+                    file_name="category.json",
                     mime="application/json"
                 )
         # --- FINE SEZIONE DEBUG ---
