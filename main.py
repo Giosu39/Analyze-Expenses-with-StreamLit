@@ -256,7 +256,6 @@ def page_category_analysis(df_tx: pd.DataFrame):
             periodo_scelto = "Tutto lo Storico"
 
     with col_filtro2:
-        # Permette all'utente di switchare tra i due modelli visivi che hai richiesto
         tipo_grafico = st.radio(
             "📐 Modello di visualizzazione:", 
             ["Sunburst (Cerchi concentrici)", "Treemap (Rettangoli annidati)"],
@@ -288,7 +287,6 @@ def page_category_analysis(df_tx: pd.DataFrame):
             color_discrete_sequence=px.colors.qualitative.Safe
         )
 
-    # Configurazione del layout e del formato valuta al passaggio del mouse
     fig.update_traces(
         textinfo="label+percent parent",
         hovertemplate="<b>%{label}</b><br>Totale: € %{value:,.2f}<br>Quota: %{percentParent:.1%}"
@@ -298,10 +296,8 @@ def page_category_analysis(df_tx: pd.DataFrame):
         height=600
     )
 
-    # Render del grafico in Streamlit
     st.plotly_chart(fig, use_container_width=True)
 
-    # 5. Tabella di riepilogo Pareto (Top Spese per Sotto-categoria)
     with st.expander("📈 Tabella di Analisi (Distribuzione Decrescente)"):
         df_summary = (
             df_spese.groupby(["categoria_nome", "sottocategoria_nome"])["amount_abs"]
@@ -312,7 +308,6 @@ def page_category_analysis(df_tx: pd.DataFrame):
         df_summary["% sul Totale"] = (df_summary["amount_abs"] / df_summary["amount_abs"].sum()) * 100
         df_summary["% Cumulativa"] = df_summary["% sul Totale"].cumsum()
         
-        # Rinomina colonne per una UI pulita
         df_summary.columns = ["Macro Categoria", "Sotto Categoria", "Totale Speso (€)", "% Parziale", "% Cumulativa (Pareto)"]
         st.dataframe(
             df_summary.style.format({
@@ -323,6 +318,109 @@ def page_category_analysis(df_tx: pd.DataFrame):
             use_container_width=True,
             hide_index=True
         )
+
+
+def page_seasonality_heatmap(df_tx: pd.DataFrame):
+    """Dashboard per l'analisi della stagionalità pluriennale delle spese con calcolo Sinking Fund."""
+    st.header("📅 Heatmap della Stagionalità Pluriennale")
+    st.write("Individua a colpo d'occhio i mesi dell'anno storicamente più dispendiosi e calcola la tua strategia di accantonamento.")
+
+    if "tipo" not in df_tx.columns or "data_operazione" not in df_tx.columns:
+        st.error("I dati caricati non dispongono delle colonne necessarie per l'analisi temporale.")
+        return
+
+    # Filtro uscite (escluse correzioni di saldo)
+    df_spese = df_tx[df_tx["tipo"] == "Spesa"].copy()
+    if "categoria_nome" in df_spese.columns:
+        df_spese = df_spese[df_spese["categoria_nome"] != "Correzione saldo"]
+
+    if df_spese.empty:
+        st.warning("📭 Nessuna spesa registrata nel database per questa analisi.")
+        return
+
+    # Estrazione Anno e Mese
+    df_spese["amount_abs"] = df_spese["amount"].abs()
+    df_spese["anno"] = df_spese["data_operazione"].dt.year
+    df_spese["mese"] = df_spese["data_operazione"].dt.month
+
+    # Creazione della matrice Pivot (Righe: Anni, Colonne: Mesi)
+    df_grid = df_spese.groupby(["anno", "mese"])["amount_abs"].sum().unstack(fill_value=0)
+
+    # Forza la presenza di tutti i 12 mesi per consistenza del layout grafico
+    for m in range(1, 13):
+        if m not in df_grid.columns:
+            df_grid[m] = 0.0
+    df_grid = df_grid[range(1, 13)]
+    
+    # Ordina gli anni in modo decrescente (l'anno più recente in alto nella Heatmap)
+    df_grid = df_grid.sort_index(ascending=False)
+
+    nomi_mesi = ["Gen", "Feb", "Mar", "Apr", "Mag", "Giu", "Lug", "Ago", "Set", "Ott", "Nov", "Dic"]
+
+    st.markdown("---")
+    st.subheader("🟩 Matrix View: Intensità delle Spese Mensili")
+    st.caption("💡 Più la cella tende al rosso intenso, più le uscite in quel mese sono state elevate.")
+
+    # Generazione Heatmap Plotly Express
+    fig = px.imshow(
+        df_grid,
+        labels=dict(x="Mese", y="Anno", color="Spese Totali (€)"),
+        x=nomi_mesi,
+        y=[str(a) for a in df_grid.index],
+        color_continuous_scale="RdYlGn_r",  # Scala invertita: Verde=Basso, Rosso=Alto
+        text_auto=",.0f"  # Mostra i valori interi formattati dentro le celle
+    )
+
+    fig.update_layout(
+        height=280 + (len(df_grid) * 45),
+        margin=dict(t=10, b=10, l=10, r=10),
+        coloraxis_colorbar=dict(title="Spese €")
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+    # --- LOGICA CALCOLO AUTOMATICO ACCANTONAMENTO (SINKING FUND) ---
+    st.markdown("---")
+    st.subheader("💡 Analisi Predittiva & Strategia di Accantonamento")
+    st.write("Algoritmo di protezione dagli shock stagionali basato sul tuo comportamento storico.")
+
+    # Calcoliamo la media storica per ogni singolo mese (es. la media di tutti i Dicembri passati)
+    medie_mensili_storiche = df_grid.mean(axis=0)
+    # Calcoliamo la spesa media mensile globale flat
+    spesa_media_globale = medie_mensili_storiche.mean()
+
+    # Identifichiamo i mesi critici (quelli che superano stabilmente la media globale)
+    mesi_critici = medie_mensili_storiche[medie_mensili_storiche > spesa_media_globale]
+    
+    if not mesi_critici.empty:
+        # L'eccesso annuale totale accumulato nei mesi di picco rispetto alla baseline
+        eccesso_totale_annuo = (mesi_critici - spesa_media_globale).sum()
+        # Quota mensile costante da salvare per coprire l'eccesso
+        quota_mensile_consigliata = eccesso_totale_annuo / 12
+        
+        col1, col2 = st.columns([4, 3])
+        
+        with col1:
+            st.markdown("##### 📌 I tuoi mesi di picco ricorrenti:")
+            for m_idx, spesa_media_mese in mesi_critici.items():
+                nome_m = nomi_mesi[m_idx - 1]
+                delta_media = spesa_media_mese - spesa_media_globale
+                st.write(f"• **{nome_m}**: Spesa storica media di € {spesa_media_mese:,.2f} (*+€ {delta_media:,.2f}* sopra la media)")
+                
+        with col2:
+            st.metric(
+                label="Buffer Mensile Consigliato (Sinking Fund)", 
+                value=f"€ {quota_mensile_consigliata:,.2f}",
+                help="Soldi da mettere da parte ogni mese per neutralizzare completamente l'impatto dei mesi rossi."
+            )
+            st.info(
+                f"📊 **Come interpretare il dato:** La tua spesa media flat è di **€ {spesa_media_globale:,.2f}/mese**. "
+                f"Tuttavia, a causa della stagionalità, i mesi critici ti causano un sovraccarico complessivo di **€ {eccesso_totale_annuo:,.2f}** all'anno. "
+                f"Se accumuli stabilmente **€ {quota_mensile_consigliata:,.2f}** al mese, azzererai lo shock sui tuoi conti."
+            )
+    else:
+        st.success("🎉 Complimenti! Le tue uscite storiche sono perfettamente bilanciate mese per mese. Non si registrano picchi stagionali anomali.")
+
 
 # ==========================================
 # 5. MAIN APPLICATION ROUTER
@@ -336,7 +434,6 @@ def main():
 
     if uploaded_file is not None:
         try:
-            # Caricamento centralizzato con cache (legge i byte dal file uploader)
             file_bytes = uploaded_file.getvalue()
             data_dict = load_data_from_bytes(file_bytes)
             
@@ -351,14 +448,14 @@ def main():
             st.sidebar.header("🧭 Navigazione")
             PAGINE = {
                 "🏠 Panoramica Generale": lambda: page_macro_overview(df_tx, df_wallets),
-                "🍕 Analisi Categorie (Futura)": lambda: page_category_analysis(df_tx),
+                "🍕 Analisi Categorie": lambda: page_category_analysis(df_tx),
+                "📅 Stagionalità Pluriennale": lambda: page_seasonality_heatmap(df_tx),
                 "🔮 Budget & Previsioni (Futura)": lambda: st.info("Work in progress! In arrivo...")
             }
             
             scelta_pagina = st.sidebar.radio("Seleziona la Dashboard da visualizzare:", list(PAGINE.keys()))
             
             st.markdown("---")
-            # Esegue la funzione associata alla pagina selezionata
             PAGINE[scelta_pagina]()
 
         except Exception as e:
