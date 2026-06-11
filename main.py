@@ -31,6 +31,11 @@ def main():
             file_path = Path(st.session_state["uploaded_sql_path"])
             data_dict = process_sql_file(file_path)
             df_tx = data_dict["transactions"]
+
+            # Escludo transazioni future (non ancora pagate)
+            if "paid" in df_tx.columns:
+                df_tx = df_tx[df_tx["paid"] == 1].copy()
+
             df_wallets = data_dict["wallets"]
             
             if df_tx.empty:
