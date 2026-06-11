@@ -3,6 +3,7 @@ import tempfile
 import datetime
 import pandas as pd
 from pathlib import Path
+import plotly.express as px
 from inputToOutput import process_sql_file
 
 # --- CONFIGURAZIONE DELLA PAGINA ---
@@ -214,11 +215,114 @@ def page_macro_overview(df_tx: pd.DataFrame, df_wallets: pd.DataFrame):
 
 
 def page_category_analysis(df_tx: pd.DataFrame):
-    """Esempio di una nuova dashboard futura."""
+    """Dashboard per l'analisi dettagliata e gerarchica delle spese."""
     st.header("🍕 Analisi Dettagliata Spese e Categorie")
-    st.write("Qui potrai inserire grafici a torta, scomposizioni delle sotto-categorie, ecc.")
-    # Esempio rapido: st.bar_chart(df_tx.groupby("categoria_nome")["amount"].sum())
+    st.write("Identifica dove si concentrano i tuoi deflussi storici sfruttando la regola di Pareto.")
 
+    # 1. Filtriamo solo le uscite (Spese)
+    if "tipo" not in df_tx.columns:
+        st.error("I dati caricati non contengono la colonna 'tipo'.")
+        return
+        
+    df_spese = df_tx[df_tx["tipo"] == "Spesa"].copy()
+
+    # Escludiamo la categoria "Correzione saldo"
+    if "categoria_nome" in df_spese.columns:
+        df_spese = df_spese[df_spese["categoria_nome"] != "Correzione saldo"]
+    
+    if df_spese.empty:
+        st.warning("📭 Nessuna spesa registrata nel database per questa analisi.")
+        return
+
+    # 2. Preparazione dati ed eliminazione dei valori nulli per Plotly
+    df_spese["amount_abs"] = df_spese["amount"].abs()
+    df_spese["categoria_nome"] = df_spese["categoria_nome"].fillna("Non Specificata")
+    df_spese["sottocategoria_nome"] = df_spese["sottocategoria_nome"].fillna("Generica")
+
+    # 3. Filtro Temporale (Storico vs Anno Specifico)
+    st.markdown("---")
+    col_filtro1, col_filtro2 = st.columns([1, 1])
+    
+    with col_filtro1:
+        if "data_operazione" in df_spese.columns:
+            df_spese["anno"] = df_spese["data_operazione"].dt.year
+            anni_disponibili = sorted(df_spese["anno"].dropna().unique(), reverse=True)
+            opzioni_periodo = ["Tutto lo Storico"] + [str(a) for a in anni_disponibili]
+            periodo_scelto = st.selectbox("📆 Seleziona il periodo temporale:", opzioni_periodo)
+            
+            if periodo_scelto != "Tutto lo Storico":
+                df_spese = df_spese[df_spese["anno"] == int(periodo_scelto)]
+        else:
+            periodo_scelto = "Tutto lo Storico"
+
+    with col_filtro2:
+        # Permette all'utente di switchare tra i due modelli visivi che hai richiesto
+        tipo_grafico = st.radio(
+            "📐 Modello di visualizzazione:", 
+            ["Sunburst (Cerchi concentrici)", "Treemap (Rettangoli annidati)"],
+            horizontal=True
+        )
+
+    st.markdown("---")
+    st.subheader(f"📊 Matrice di Distribuzione delle Spese ({periodo_scelto})")
+    st.caption("💡 Clicca sulle macro-categorie per esplorare le sotto-categorie nel dettaglio.")
+
+    # 4. Generazione del Grafico Plotly
+    path_gerarchia = ["categoria_nome", "sottocategoria_nome"]
+    
+    if tipo_grafico == "Sunburst (Cerchi concentrici)":
+        fig = px.sunburst(
+            df_spese,
+            path=path_gerarchia,
+            values="amount_abs",
+            color="categoria_nome",
+            color_discrete_sequence=px.colors.qualitative.Safe,
+            branchvalues="total"
+        )
+    else:
+        fig = px.treemap(
+            df_spese,
+            path=path_gerarchia,
+            values="amount_abs",
+            color="categoria_nome",
+            color_discrete_sequence=px.colors.qualitative.Safe
+        )
+
+    # Configurazione del layout e del formato valuta al passaggio del mouse
+    fig.update_traces(
+        textinfo="label+percent parent",
+        hovertemplate="<b>%{label}</b><br>Totale: € %{value:,.2f}<br>Quota: %{percentParent:.1%}"
+    )
+    fig.update_layout(
+        margin=dict(t=10, l=10, r=10, b=10),
+        height=600
+    )
+
+    # Render del grafico in Streamlit
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 5. Tabella di riepilogo Pareto (Top Spese per Sotto-categoria)
+    with st.expander("📈 Tabella di Analisi (Distribuzione Decrescente)"):
+        df_summary = (
+            df_spese.groupby(["categoria_nome", "sottocategoria_nome"])["amount_abs"]
+            .sum()
+            .reset_index()
+            .sort_values(by="amount_abs", ascending=False)
+        )
+        df_summary["% sul Totale"] = (df_summary["amount_abs"] / df_summary["amount_abs"].sum()) * 100
+        df_summary["% Cumulativa"] = df_summary["% sul Totale"].cumsum()
+        
+        # Rinomina colonne per una UI pulita
+        df_summary.columns = ["Macro Categoria", "Sotto Categoria", "Totale Speso (€)", "% Parziale", "% Cumulativa (Pareto)"]
+        st.dataframe(
+            df_summary.style.format({
+                "Totale Speso (€)": "€ {:,.2f}",
+                "% Parziale": "{:.1f}%",
+                "% Cumulativa (Pareto)": "{:.1f}%"
+            }), 
+            use_container_width=True,
+            hide_index=True
+        )
 
 # ==========================================
 # 5. MAIN APPLICATION ROUTER
