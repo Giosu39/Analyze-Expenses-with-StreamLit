@@ -143,7 +143,51 @@ def main():
             
             st.line_chart(df_chart_data, y="patrimonio_cumulativo")
 
-            # --- 8. ANTEPRIMA REGISTRO ---
+            # --- 8. TREND DEL FLUSSO DI CASSA SU MEDIA MOBILE (ROLLING CASH FLOW) ---
+            st.markdown("---")
+            st.subheader("🔄 Trend del Flusso di Cassa su Media Mobile (Rolling Cash Flow)")
+            st.write(
+                "Questa vista analizza il trend strutturale di lungo periodo isolando i picchi stagionali "
+                "(es. tredicesime o scadenze assicurative annuali)."
+            )
+
+            if not df_chronological.empty:
+                df_monthly = df_chronological.copy()
+                # Creiamo una colonna Periodo a livello di Mese (Es: 2024-01)
+                df_monthly["mese_anno"] = df_monthly["data_operazione"].dt.to_period("M")
+                
+                # Calcoliamo i totali mensili assoluti per Entrate e Uscite
+                df_entrate = df_monthly[df_monthly["tipo"] == "Entrata"].groupby("mese_anno")["amount_abs"].sum().rename("Entrate")
+                df_uscite = df_monthly[df_monthly["tipo"] == "Spesa"].groupby("mese_anno")["amount_abs"].sum().rename("Uscite")
+                
+                # Creiamo un asse temporale continuo mensile dal primo all'ultimo record per evitare buchi
+                min_period = df_monthly["mese_anno"].min()
+                max_period = df_monthly["mese_anno"].max()
+                all_months = pd.period_range(start=min_period, end=max_period, freq="M")
+                
+                df_rolling = pd.DataFrame(index=all_months)
+                df_rolling = df_rolling.join(df_entrate, how="left").join(df_uscite, how="left").fillna(0)
+                
+                # Configurazione dinamica della finestra temporale (Default 6 mesi per la stagionalità)
+                finestra_mesi = st.slider(
+                    "Seleziona la finestra della media mobile (in mesi):", 
+                    min_value=2, 
+                    max_value=12, 
+                    value=12,
+                    help="La media mobile a 12 mesi è lo standard ideale per ripulire i grafici dalla stagionalità annuale."
+                )
+                
+                # Calcolo della media mobile (usiamo min_periods=1 per non perdere i dati nei mesi iniziali della serie)
+                df_rolling[f"Entrate Totali (Media Mobile {finestra_mesi}m)"] = df_rolling["Entrate"].rolling(window=finestra_mesi, min_periods=1).mean()
+                df_rolling[f"Uscite Totali (Media Mobile {finestra_mesi}m)"] = df_rolling["Uscite"].rolling(window=finestra_mesi, min_periods=1).mean()
+                
+                # Riportiamo l'indice in formato Datetime per permettere a Streamlit di plottarlo correttamente
+                df_rolling.index = df_rolling.index.to_timestamp()
+                
+                colonne_grafico = [f"Entrate Totali (Media Mobile {finestra_mesi}m)", f"Uscite Totali (Media Mobile {finestra_mesi}m)"]
+                st.line_chart(df_rolling[colonne_grafico])
+
+            # --- 9. ANTEPRIMA REGISTRO ---
             st.markdown("---")
             with st.expander("🔍 Visualizza Registro Ultimi Movimenti"):
                 colonne_anteprima = [
